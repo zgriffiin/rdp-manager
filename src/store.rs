@@ -6,27 +6,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const DEFAULT_PORT: u16 = 3389;
 
-#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum Audio {
-    #[default]
-    Local,
-    Remote,
-    None,
-}
-
-impl Audio {
-    pub const ALL: [Audio; 3] = [Audio::Local, Audio::Remote, Audio::None];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Audio::Local => "Play on this computer",
-            Audio::Remote => "Play on remote computer",
-            Audio::None => "Do not play",
-        }
-    }
-}
-
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(default)]
 pub struct Connection {
@@ -39,14 +18,10 @@ pub struct Connection {
     pub description: String,
     pub username: String,
     pub fullscreen: bool,
-    /// Window size in pixels; `0 x 0` lets Remote Desktop choose.
+    /// Window size in pixels, used when not full screen.
     pub width: u32,
     pub height: u32,
     pub multi_monitor: bool,
-    pub redirect_clipboard: bool,
-    pub redirect_drives: bool,
-    pub redirect_printers: bool,
-    pub audio: Audio,
     pub created: u64,
     pub modified: u64,
     pub last_connected: Option<u64>,
@@ -68,10 +43,6 @@ impl Default for Connection {
             width: 1600,
             height: 900,
             multi_monitor: false,
-            redirect_clipboard: true,
-            redirect_drives: false,
-            redirect_printers: false,
-            audio: Audio::Local,
             created: now,
             modified: now,
             last_connected: None,
@@ -127,14 +98,19 @@ impl Store {
     /// file cannot be read or moved, the store is read-only so the file is never lost.
     pub fn load() -> (Self, Option<String>) {
         let dir = app_dir();
+        // Version 0.1.0 started sessions from .rdp files in this folder; they are no longer used.
+        let _ = std::fs::remove_dir_all(dir.join("sessions"));
         let path = dir.join("connections.json");
         let mut warning = None;
         let mut read_only = false;
         let read_only_note =
             "Changes will not be saved until you fix or move the file and restart RDP Manager.";
-        let data = match std::fs::read_to_string(&path) {
+        let mut data = match std::fs::read_to_string(&path) {
             Ok(text) => match serde_json::from_str(&text) {
-                Ok(data) => data,
+                Ok(data) => {
+                    warning = sharing_warning(&text);
+                    data
+                }
                 Err(err) => {
                     let backup = dir.join(format!("connections.broken-{}.json", now()));
                     warning = Some(match std::fs::rename(&path, &backup) {
@@ -163,6 +139,14 @@ impl Store {
                 Data::default()
             }
         };
+        // Older versions had an automatic window size. Remote Desktop now always needs one,
+        // or it opens full screen.
+        for c in &mut data.connections {
+            if c.width == 0 || c.height == 0 {
+                let d = Connection::default();
+                (c.width, c.height) = (d.width, d.height);
+            }
+        }
         (
             Self {
                 data,
@@ -211,6 +195,30 @@ impl Store {
     }
 }
 
+/// Version 0.1.0 could turn off clipboard, drive and printer sharing per connection.
+/// Remote Desktop now uses its own Local Resources settings for every connection, so
+/// the user must be told which connections lose such a restriction.
+fn sharing_warning(text: &str) -> Option<String> {
+    let old: serde_json::Value = serde_json::from_str(text).ok()?;
+    let names: Vec<&str> = old["connections"]
+        .as_array()?
+        .iter()
+        .filter(|c| {
+            ["redirect_clipboard", "redirect_drives", "redirect_printers"]
+                .iter()
+                .any(|k| c[k] == false)
+        })
+        .filter_map(|c| c["name"].as_str())
+        .collect();
+    (!names.is_empty()).then(|| {
+        format!(
+            "Clipboard, drive or printer sharing was turned off for {}. It now follows Local \
+             Resources in Remote Desktop Connection (mstsc). Check it before you connect.",
+            names.join(", ")
+        )
+    })
+}
+
 pub fn app_dir() -> PathBuf {
     let base = std::env::var_os("APPDATA")
         .map(PathBuf::from)
@@ -252,7 +260,8 @@ pub fn format_address(host: &str, port: u16) -> String {
 /// The port is `None` when the input does not name one.
 pub fn parse_address(input: &str) -> Option<(String, Option<u16>)> {
     let input = input.trim();
-    if input.is_empty() || input.contains(char::is_whitespace) {
+    // Slashes would turn the address into a registry sub-key and are never valid in a host.
+    if input.is_empty() || input.contains(|c: char| c.is_whitespace() || c == '/' || c == '\\') {
         return None;
     }
     let parse_port = |p: &str| p.parse::<u16>().ok().filter(|&p| p != 0);
@@ -313,6 +322,8 @@ mod tests {
         assert_eq!(parse_address("srv01:abc"), None);
         assert_eq!(parse_address("srv 01"), None);
         assert_eq!(parse_address(""), None);
+        assert_eq!(parse_address(r"srv01\x"), None);
+        assert_eq!(parse_address("srv01/x"), None);
     }
 
     #[test]
@@ -320,5 +331,20 @@ mod tests {
         assert_eq!(format_address("srv01", 3389), "srv01");
         assert_eq!(format_address("srv01", 3390), "srv01:3390");
         assert_eq!(format_address("fe80::1", 3390), "[fe80::1]:3390");
+    }
+
+    #[test]
+    fn warns_about_turned_off_sharing() {
+        let old = r#"{"connections": [
+            {"name": "Open", "redirect_clipboard": true, "redirect_drives": true},
+            {"name": "Locked", "redirect_clipboard": true, "redirect_drives": false}
+        ]}"#;
+        let warning = sharing_warning(old).unwrap();
+        assert!(warning.contains("for Locked."));
+        assert!(!warning.contains("Open"));
+        assert_eq!(
+            sharing_warning(r#"{"connections": [{"name": "New"}]}"#),
+            None
+        );
     }
 }
