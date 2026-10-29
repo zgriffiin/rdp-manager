@@ -2,7 +2,7 @@
 
 use crate::credentials;
 use crate::rdp::Sessions;
-use crate::store::{self, Audio, Connection, DEFAULT_PORT, Store, ThemeChoice};
+use crate::store::{self, Connection, DEFAULT_PORT, Store, ThemeChoice};
 use crate::theme::{self, Palette};
 use crate::widgets::{self, Kind, button, card, icon_button};
 use eframe::egui::{
@@ -13,8 +13,7 @@ use eframe::egui::{
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-const RESOLUTIONS: [(u32, u32); 6] = [
-    (0, 0),
+const RESOLUTIONS: [(u32, u32); 5] = [
     (1280, 720),
     (1366, 768),
     (1600, 900),
@@ -826,7 +825,7 @@ impl App {
 
         ui.add_space(16.0);
         card(ui, p, |ui| {
-            card_title(ui, p, "Display and local resources");
+            card_title(ui, p, "Display");
             info_grid(ui, "info-display", p, |row| {
                 let display = match (c.fullscreen, c.multi_monitor) {
                     (true, true) => "Full screen on all monitors".into(),
@@ -834,10 +833,6 @@ impl App {
                     (false, _) => format!("Window, {}", resolution_label(c.width, c.height)),
                 };
                 row("Display", display);
-                row("Clipboard", yes_no(c.redirect_clipboard).into());
-                row("Local drives", yes_no(c.redirect_drives).into());
-                row("Printers", yes_no(c.redirect_printers).into());
-                row("Audio", c.audio.label().into());
             });
         });
 
@@ -1241,29 +1236,19 @@ fn section_form(ui: &mut Ui, p: &Palette, ed: &mut Editor) {
                 ui,
                 p,
                 "ℹ",
-                "The remote desktop resizes to fit when you resize its window.",
+                "Other display options, such as resizing the remote desktop to fit its window, \
+                 use the settings in Remote Desktop Connection.",
             );
         }
         Section::Resources => {
-            grid("form-resources").show(ui, |ui| {
-                form_label(ui, p, "Share", false);
-                ui.vertical(|ui| {
-                    ui.checkbox(&mut d.redirect_clipboard, "Clipboard");
-                    ui.checkbox(&mut d.redirect_drives, "Local drives");
-                    ui.checkbox(&mut d.redirect_printers, "Printers");
-                });
-                ui.end_row();
-                form_label(ui, p, "Remote audio", false);
-                ComboBox::from_id_salt("audio")
-                    .width(220.0)
-                    .selected_text(d.audio.label())
-                    .show_ui(ui, |ui| {
-                        for a in Audio::ALL {
-                            ui.selectable_value(&mut d.audio, a, a.label());
-                        }
-                    });
-                ui.end_row();
-            });
+            note(
+                ui,
+                p,
+                "ℹ",
+                "Clipboard, drives, printers, and audio use the settings in Remote Desktop \
+                 Connection. To change them, open Remote Desktop Connection (mstsc), select Show \
+                 Options, change the Local Resources tab, then select Save on the General tab.",
+            );
         }
     }
 }
@@ -1329,11 +1314,7 @@ fn dialog_frame(ctx: &egui::Context, p: &Palette) -> Frame {
 }
 
 fn resolution_label(w: u32, h: u32) -> String {
-    if w == 0 || h == 0 {
-        "Automatic".into()
-    } else {
-        format!("{w} × {h}")
-    }
+    format!("{w} × {h}")
 }
 
 fn yes_no(b: bool) -> &'static str {

@@ -1,10 +1,11 @@
 // Starts and tracks Remote Desktop sessions in the built-in Windows client (mstsc.exe).
 
 use crate::credentials;
-use crate::store::{self, Audio, Connection};
+use crate::store::{self, Connection};
 use std::collections::BTreeMap;
 use std::process::{Child, Command};
 use std::time::{Duration, Instant};
+use windows_sys::Win32::System::Registry::{HKEY_CURRENT_USER, REG_SZ, RegSetKeyValueW};
 
 /// How long mstsc may still read the shared `TERMSRV/<host>` sign-in entry after it starts.
 const SIGN_IN_TIME: Duration = Duration::from_secs(30);
@@ -80,11 +81,9 @@ impl Sessions {
 
     pub fn connect(&mut self, conn: &Connection) -> Result<(), String> {
         self.check_host_free(&conn.host)?;
-        let dir = store::app_dir().join("sessions");
-        let path = dir.join(format!("{}.rdp", conn.id));
-        std::fs::create_dir_all(&dir)
-            .and_then(|_| std::fs::write(&path, encode_utf16_bom(&rdp_file(conn))))
-            .map_err(|e| format!("Could not write the connection file: {e}"))?;
+        if !conn.username.is_empty() {
+            set_username_hint(&conn.address(), &conn.username);
+        }
         match credentials::load_password(&conn.id) {
             Some(password) if !conn.username.is_empty() => {
                 credentials::provide_to_remote_desktop(&conn.host, &conn.username, &password)?
@@ -92,7 +91,7 @@ impl Sessions {
             // Never sign in with an entry left over from another connection to this host.
             _ => credentials::forget_remote_desktop(&conn.host),
         }
-        let child = spawn(Command::new("mstsc.exe").arg(&path)).inspect_err(|_| {
+        let child = spawn(Command::new("mstsc.exe").args(mstsc_args(conn))).inspect_err(|_| {
             credentials::forget_remote_desktop(&conn.host);
         })?;
         self.insert(
@@ -163,48 +162,42 @@ fn spawn(cmd: &mut Command) -> Result<Child, String> {
         .map_err(|e| format!("Could not start Remote Desktop (mstsc.exe): {e}"))
 }
 
-fn encode_utf16_bom(text: &str) -> Vec<u8> {
-    let mut out = vec![0xFF, 0xFE];
-    out.extend(text.encode_utf16().flat_map(u16::to_le_bytes));
-    out
+/// Settings go on the command line instead of in an .rdp file: since the April 2026
+/// Windows update, opening an .rdp file shows a security prompt on every launch.
+/// Clipboard, drive, printer, and audio sharing follow Remote Desktop Connection's own defaults.
+pub fn mstsc_args(c: &Connection) -> Vec<String> {
+    let mut args = vec![format!("/v:{}", c.address())];
+    if c.admin_session {
+        args.push("/admin".into());
+    }
+    if c.fullscreen {
+        args.push(if c.multi_monitor { "/multimon" } else { "/f" }.into());
+    } else {
+        args.push(format!("/w:{}", c.width));
+        args.push(format!("/h:{}", c.height));
+    }
+    args
 }
 
-pub fn rdp_file(c: &Connection) -> String {
-    let flag = |b: bool| if b { 1 } else { 0 };
-    let mut lines = vec![
-        format!("full address:s:{}", c.address()),
-        format!("screen mode id:i:{}", if c.fullscreen { 2 } else { 1 }),
-        format!("use multimon:i:{}", flag(c.fullscreen && c.multi_monitor)),
-        "session bpp:i:32".into(),
-        "smart sizing:i:1".into(),
-        "dynamic resolution:i:1".into(),
-        "autoreconnection enabled:i:1".into(),
-        "authentication level:i:2".into(),
-        "prompt for credentials:i:0".into(),
-        format!("administrative session:i:{}", flag(c.admin_session)),
-        format!("redirectclipboard:i:{}", flag(c.redirect_clipboard)),
-        format!("redirectprinters:i:{}", flag(c.redirect_printers)),
-        format!(
-            "drivestoredirect:s:{}",
-            if c.redirect_drives { "*" } else { "" }
-        ),
-        format!(
-            "audiomode:i:{}",
-            match c.audio {
-                Audio::Local => 0,
-                Audio::Remote => 1,
-                Audio::None => 2,
-            }
-        ),
-    ];
-    if !c.fullscreen && c.width > 0 && c.height > 0 {
-        lines.push(format!("desktopwidth:i:{}", c.width));
-        lines.push(format!("desktopheight:i:{}", c.height));
+/// Fills in the user name when Remote Desktop asks for the password. Remote Desktop
+/// Connection keeps this hint itself, so a failure only means the box starts empty.
+fn set_username_hint(address: &str, user: &str) {
+    let key = credentials::wide(&format!(
+        r"Software\Microsoft\Terminal Server Client\Servers\{address}"
+    ));
+    let name = credentials::wide("UsernameHint");
+    let value = credentials::wide(user);
+    // SAFETY: all strings are null-terminated and outlive the call.
+    unsafe {
+        RegSetKeyValueW(
+            HKEY_CURRENT_USER,
+            key.as_ptr(),
+            name.as_ptr(),
+            REG_SZ,
+            value.as_ptr().cast(),
+            (value.len() * 2) as u32,
+        );
     }
-    if !c.username.is_empty() {
-        lines.push(format!("username:s:{}", c.username));
-    }
-    lines.join("\r\n") + "\r\n"
 }
 
 #[cfg(test)]
@@ -212,41 +205,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn rdp_file_reflects_settings() {
+    fn mstsc_args_reflect_settings() {
         let c = Connection {
             host: "srv01".into(),
             port: 3390,
-            username: r"CORP\me".into(),
-            redirect_drives: true,
-            audio: Audio::None,
             ..Default::default()
         };
-        let text = rdp_file(&c);
-        for line in [
-            "full address:s:srv01:3390",
-            "screen mode id:i:1",
-            "drivestoredirect:s:*",
-            "audiomode:i:2",
-            "desktopwidth:i:1600",
-            r"username:s:CORP\me",
-        ] {
-            assert!(
-                text.contains(&format!("{line}\r\n")),
-                "missing {line:?} in:\n{text}"
-            );
-        }
+        assert_eq!(mstsc_args(&c), ["/v:srv01:3390", "/w:1600", "/h:900"]);
 
-        let full = rdp_file(&Connection {
+        let full = Connection {
             fullscreen: true,
-            multi_monitor: true,
+            admin_session: true,
             ..c
-        });
-        assert!(full.contains("screen mode id:i:2\r\n") && full.contains("use multimon:i:1\r\n"));
-        assert!(!full.contains("desktopwidth"));
-    }
-
-    #[test]
-    fn rdp_file_is_utf16_with_bom() {
-        assert_eq!(encode_utf16_bom("a"), [0xFF, 0xFE, b'a', 0]);
+        };
+        assert_eq!(mstsc_args(&full), ["/v:srv01:3390", "/admin", "/f"]);
+        let all = Connection {
+            multi_monitor: true,
+            ..full
+        };
+        assert_eq!(mstsc_args(&all), ["/v:srv01:3390", "/admin", "/multimon"]);
     }
 }

@@ -13,17 +13,21 @@ It is a single, small `.exe` written in Rust. Sessions open in the Remote Deskto
 - **Connect and disconnect:** active sessions are shown in the sidebar. Disconnect closes the Remote Desktop window; you stay signed in on the server.
 - **Saved passwords:** stored in Windows Credential Manager, encrypted for your Windows account. They are never written to the connections file.
 - **Display options:** full screen, all monitors, or a fixed window size.
-- **Local resources:** clipboard, drives, printers, and audio.
+- **No security prompt on every connect:** sessions start Remote Desktop directly instead of opening an .rdp file, so Windows does not show the "Unknown remote connection" warning each time. Clipboard, drives, printers, and audio use the settings you save once in Remote Desktop Connection (Show Options > Local Resources, then Save).
 - **Light and dark themes**, and full keyboard control.
 
 ![RDP Manager, dark theme](docs/screenshot-dark.png)
 
 ## Install
 
-1. Download `rdp-manager.exe` from the [latest release](https://github.com/zgriffiin/rdp-manager/releases/latest).
-2. Run it. No installer is needed.
+1. Download `rdp-manager-<version>-setup.exe` from the [latest release](https://github.com/zgriffiin/rdp-manager/releases/latest).
+2. Run it. It installs for your Windows account only, so no admin rights are needed, and adds RDP Manager to the Start menu. An optional desktop shortcut is also available.
 
-The `.exe` is not code-signed, so Windows SmartScreen may show "Windows protected your PC" the first time. Select **More info**, then **Run anyway**.
+To update, run the newer installer. To remove RDP Manager, use **Settings > Apps > Installed apps**. Your saved connections and passwords are kept.
+
+If you do not want to install, download `rdp-manager.exe` instead and run it from any folder.
+
+The files are not code-signed yet, so Windows SmartScreen may show "Windows protected your PC" the first time. Select **More info**, then **Run anyway**.
 
 Requirements: Windows 10 or 11 (64-bit).
 
@@ -62,6 +66,8 @@ cargo build --release
 ```
 
 Run the tests with `cargo test`.
+
+To build the installer as well, install [Inno Setup 6](https://jrsoftware.org/isinfo.php) and run `installer\build.ps1` in PowerShell 7. The output is in `target\installer`.
 
 ## License
 
