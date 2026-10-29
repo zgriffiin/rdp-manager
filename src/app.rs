@@ -490,7 +490,8 @@ impl App {
         if self
             .status
             .as_ref()
-            .is_some_and(|s| s.at.elapsed() > Duration::from_secs(8))
+            // Errors stay until the next message, so a warning is not missed.
+            .is_some_and(|s| !s.error && s.at.elapsed() > Duration::from_secs(8))
         {
             self.status = None;
         }
@@ -501,33 +502,39 @@ impl App {
                     .inner_margin(Margin::symmetric(16, 5)),
             )
             .show(ui, |ui| {
-                ui.horizontal(|ui| {
+                // Counts first, so a long message is shortened instead of covering them.
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    let n = self.store.data.connections.len();
+                    let m = self.sessions.len();
+                    ui.label(
+                        RichText::new(format!(
+                            "{n} connection{} · {m} active session{}",
+                            if n == 1 { "" } else { "s" },
+                            if m == 1 { "" } else { "s" }
+                        ))
+                        .size(12.0)
+                        .color(p.text_weak),
+                    );
+                    ui.add_space(16.0);
                     if let Some(s) = &self.status {
-                        let (icon, color) = if s.error {
-                            ("⚠", p.danger)
-                        } else {
-                            ("✔", p.success)
-                        };
-                        ui.label(RichText::new(icon).color(color).size(12.0));
-                        ui.label(
-                            RichText::new(&s.text)
-                                .color(if s.error { p.danger } else { p.text })
-                                .size(12.0),
-                        );
+                        ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                            let (icon, color) = if s.error {
+                                ("⚠", p.danger)
+                            } else {
+                                ("✔", p.success)
+                            };
+                            ui.label(RichText::new(icon).color(color).size(12.0));
+                            // A shortened message shows in full when you point to it.
+                            ui.add(
+                                egui::Label::new(
+                                    RichText::new(&s.text)
+                                        .color(if s.error { p.danger } else { p.text })
+                                        .size(12.0),
+                                )
+                                .truncate(),
+                            );
+                        });
                     }
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        let n = self.store.data.connections.len();
-                        let m = self.sessions.len();
-                        ui.label(
-                            RichText::new(format!(
-                                "{n} connection{} · {m} active session{}",
-                                if n == 1 { "" } else { "s" },
-                                if m == 1 { "" } else { "s" }
-                            ))
-                            .size(12.0)
-                            .color(p.text_weak),
-                        );
-                    });
                 });
             });
         if self.status.is_some() {

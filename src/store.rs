@@ -107,7 +107,10 @@ impl Store {
             "Changes will not be saved until you fix or move the file and restart RDP Manager.";
         let mut data = match std::fs::read_to_string(&path) {
             Ok(text) => match serde_json::from_str(&text) {
-                Ok(data) => data,
+                Ok(data) => {
+                    warning = sharing_warning(&text);
+                    data
+                }
                 Err(err) => {
                     let backup = dir.join(format!("connections.broken-{}.json", now()));
                     warning = Some(match std::fs::rename(&path, &backup) {
@@ -190,6 +193,30 @@ impl Store {
     pub fn remove(&mut self, id: &str) {
         self.data.connections.retain(|c| c.id != id);
     }
+}
+
+/// Version 0.1.0 could turn off clipboard, drive and printer sharing per connection.
+/// Remote Desktop now uses its own Local Resources settings for every connection, so
+/// the user must be told which connections lose such a restriction.
+fn sharing_warning(text: &str) -> Option<String> {
+    let old: serde_json::Value = serde_json::from_str(text).ok()?;
+    let names: Vec<&str> = old["connections"]
+        .as_array()?
+        .iter()
+        .filter(|c| {
+            ["redirect_clipboard", "redirect_drives", "redirect_printers"]
+                .iter()
+                .any(|k| c[k] == false)
+        })
+        .filter_map(|c| c["name"].as_str())
+        .collect();
+    (!names.is_empty()).then(|| {
+        format!(
+            "Clipboard, drive or printer sharing was turned off for {}. It now follows Local \
+             Resources in Remote Desktop Connection (mstsc). Check it before you connect.",
+            names.join(", ")
+        )
+    })
 }
 
 pub fn app_dir() -> PathBuf {
@@ -304,5 +331,20 @@ mod tests {
         assert_eq!(format_address("srv01", 3389), "srv01");
         assert_eq!(format_address("srv01", 3390), "srv01:3390");
         assert_eq!(format_address("fe80::1", 3390), "[fe80::1]:3390");
+    }
+
+    #[test]
+    fn warns_about_turned_off_sharing() {
+        let old = r#"{"connections": [
+            {"name": "Open", "redirect_clipboard": true, "redirect_drives": true},
+            {"name": "Locked", "redirect_clipboard": true, "redirect_drives": false}
+        ]}"#;
+        let warning = sharing_warning(old).unwrap();
+        assert!(warning.contains("for Locked."));
+        assert!(!warning.contains("Open"));
+        assert_eq!(
+            sharing_warning(r#"{"connections": [{"name": "New"}]}"#),
+            None
+        );
     }
 }
